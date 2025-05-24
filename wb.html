@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTC Collaborative Whiteboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            margin: 10px;
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+        }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            padding: 15px 20px;
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            border-radius: 20px 20px 0 0;
+            gap: 15px;
+            flex-wrap: wrap;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .tool-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 5px 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .tool-btn {
+            padding: 10px 15px;
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        }
+
+        .tool-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .tool-btn.active {
+            background: rgba(255, 255, 255, 0.4);
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .color-palette {
+            display: flex;
+            gap: 8px;
+        }
+
+        .color-btn {
+            width: 35px;
+            height: 35px;
+            border: 3px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .color-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .color-btn.active {
+            border-color: white;
+            transform: scale(1.2);
+        }
+
+        .size-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: white;
+            font-weight: 500;
+        }
+
+        .size-slider {
+            width: 100px;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+            outline: none;
+            appearance: none;
+        }
+
+        .size-slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .connection-panel {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-left: auto;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4757;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.connected {
+            background: #2ed573;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: white;
+            border-radius: 0 0 20px 20px;
+        }
+
+        #whiteboard {
+            display: block;
+            cursor: crosshair;
+            width: 100%;
+            height: 100%;
+        }
+
+        .participants {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+
+        .room-info {
+            color: white;
+            font-size: 14px;
+            font-weight: 500;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .input-field {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .cursor-indicator {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 1000;
+            transform: translate(-50%, -50%);
+            transition: all 0.1s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="toolbar">
+            <div class="tool-group">
+                <button class="tool-btn active" id="penTool" data-tool="pen">✏️ Pen</button>
+                <button class="tool-btn" id="eraserTool" data-tool="eraser">🧽 Eraser</button>
+                <button class="tool-btn" id="clearBtn">🗑️ Clear</button>
+            </div>
+
+            <div class="tool-group">
+                <span style="color: white; font-weight: 500;">Colors:</span>
+                <div class="color-palette">
+                    <div class="color-btn active" style="background: #000000" data-color="#000000"></div>
+                    <div class="color-btn" style="background: #ff4757" data-color="#ff4757"></div>
+                    <div class="color-btn" style="background: #2ed573" data-color="#2ed573"></div>
+                    <div class="color-btn" style="background: #3742fa" data-color="#3742fa"></div>
+                    <div class="color-btn" style="background: #ffa502" data-color="#ffa502"></div>
+                    <div class="color-btn" style="background: #ff6b6b" data-color="#ff6b6b"></div>
+                    <div class="color-btn" style="background: #a55eea" data-color="#a55eea"></div>
+                </div>
+            </div>
+
+            <div class="tool-group size-control">
+                <span>Size:</span>
+                <input type="range" class="size-slider" id="brushSize" min="1" max="20" value="3">
+                <span id="sizeValue">3px</span>
+            </div>
+
+            <div class="connection-panel">
+                <div class="input-group">
+                    <input type="text" class="input-field" id="roomInput" placeholder="Room ID" maxlength="10">
+                    <button class="tool-btn" id="joinBtn">Join Room</button>
+                </div>
+                <div class="room-info">
+                    <div>Room: <span id="currentRoom">Not connected</span></div>
+                    <div style="display: flex; align-items: center; gap: 5px; margin-top: 3px;">
+                        <div class="status-indicator" id="statusIndicator"></div>
+                        <span id="statusText">Disconnected</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="canvas-container">
+            <canvas id="whiteboard"></canvas>
+            <div class="participants" id="participants">Participants: 1</div>
+        </div>
+    </div>
+
+    <script>
+        class CollaborativeWhiteboard {
+            constructor() {
+                this.canvas = document.getElementById('whiteboard');
+                this.ctx = this.canvas.getContext('2d');
+                this.isDrawing = false;
+                this.currentTool = 'pen';
+                this.currentColor = '#000000';
+                this.brushSize = 3;
+                this.lastX = 0;
+                this.lastY = 0;
+                
+                // WebRTC variables
+                this.peers = new Map();
+                this.localConnection = null;
+                this.room = null;
+                this.participantCount = 1;
+                this.cursors = new Map();
+                
+                // Simulated signaling server (in production, use a real signaling server)
+                this.signalingData = {};
+                
+                this.setupCanvas();
+                this.setupEventListeners();
+                this.setupTools();
+            }
+
+            setupCanvas() {
+                const resizeCanvas = () => {
+                    const container = this.canvas.parentElement;
+                    this.canvas.width = container.clientWidth;
+                    this.canvas.height = container.clientHeight;
+                };
+                
+                resizeCanvas();
+                window.addEventListener('resize', resizeCanvas);
+                
+                this.ctx.lineCap = 'round';
+                this.ctx.lineJoin = 'round';
+            }
+
+            setupEventListeners() {
+                // Drawing events
+                this.canvas.addEventListener('mousedown', this.startDrawing.bind(this));
+                this.canvas.addEventListener('mousemove', this.draw.bind(this));
+                this.canvas.addEventListener('mouseup', this.stopDrawing.bind(this));
+                this.canvas.addEventListener('mouseout', this.stopDrawing.bind(this));
+
+                // Touch events for mobile
+                this.canvas.addEventListener('touchstart', this.handleTouch.bind(this));
+                this.canvas.addEventListener('touchmove', this.handleTouch.bind(this));
+                this.canvas.addEventListener('touchend', this.stopDrawing.bind(this));
+
+                // Mouse move for cursor tracking
+                this.canvas.addEventListener('mousemove', this.trackCursor.bind(this));
+            }
+
+            setupTools() {
+                // Tool buttons
+                document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                        e.target.classList.add('active');
+                        this.currentTool = e.target.dataset.tool;
+                        this.canvas.style.cursor = this.currentTool === 'eraser' ? 'grab' : 'crosshair';
+                    });
+                });
+
+                // Color buttons
+                document.querySelectorAll('.color-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+                        e.target.classList.add('active');
+                        this.currentColor = e.target.dataset.color;
+                    });
+                });
+
+                // Brush size
+                const sizeSlider = document.getElementById('brushSize');
+                const sizeValue = document.getElementById('sizeValue');
+                sizeSlider.addEventListener('input', (e) => {
+                    this.brushSize = e.target.value;
+                    sizeValue.textContent = e.target.value + 'px';
+                });
+
+                // Clear button
+                document.getElementById('clearBtn').addEventListener('click', () => {
+                    this.clearCanvas();
+                    this.broadcastClear();
+                });
+
+                // Room controls
+                document.getElementById('joinBtn').addEventListener('click', () => {
+                    const roomId = document.getElementById('roomInput').value.trim();
+                    if (roomId) {
+                        this.joinRoom(roomId);
+                    }
+                });
+
+                document.getElementById('roomInput').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        const roomId = e.target.value.trim();
+                        if (roomId) {
+                            this.joinRoom(roomId);
+                        }
+                    }
+                });
+            }
+
+            getMousePos(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                return {
+                    x: (e.clientX - rect.left) * (this.canvas.width / rect.width),
+                    y: (e.clientY - rect.top) * (this.canvas.height / rect.height)
+                };
+            }
+
+            startDrawing(e) {
+                this.isDrawing = true;
+                const pos = this.getMousePos(e);
+                this.lastX = pos.x;
+                this.lastY = pos.y;
+            }
+
+            draw(e) {
+                if (!this.isDrawing) return;
+
+                const pos = this.getMousePos(e);
+                
+                this.ctx.globalCompositeOperation = 
+                    this.currentTool === 'eraser' ? 'destination-out' : 'source-over';
+                this.ctx.strokeStyle = this.currentColor;
+                this.ctx.lineWidth = this.brushSize;
+
+                this.ctx.beginPath();
+                this.ctx.moveTo(this.lastX, this.lastY);
+                this.ctx.lineTo(pos.x, pos.y);
+                this.ctx.stroke();
+
+                // Broadcast drawing data
+                this.broadcastDrawing({
+                    type: 'draw',
+                    fromX: this.lastX,
+                    fromY: this.lastY,
+                    toX: pos.x,
+                    toY: pos.y,
+                    color: this.currentColor,
+                    size: this.brushSize,
+                    tool: this.currentTool,
+                    timestamp: Date.now()
+                });
+
+                this.lastX = pos.x;
+                this.lastY = pos.y;
+            }
+
+            stopDrawing() {
+                this.isDrawing = false;
+            }
+
+            trackCursor(e) {
+                if (!this.room) return;
+                
+                const pos = this.getMousePos(e);
+                this.broadcastCursor({
+                    type: 'cursor',
+                    x: pos.x,
+                    y: pos.y,
+                    timestamp: Date.now()
+                });
+            }
+
+            handleTouch(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                const mouseEvent = new MouseEvent(e.type === 'touchstart' ? 'mousedown' : 
+                    e.type === 'touchmove' ? 'mousemove' : 'mouseup', {
+                    clientX: touch.clientX,
+                    clientY: touch.clientY
+                });
+                this.canvas.dispatchEvent(mouseEvent);
+            }
+
+            clearCanvas() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            }
+
+            // Simulated WebRTC functionality
+            async joinRoom(roomId) {
+                this.room = roomId;
+                document.getElementById('currentRoom').textContent = roomId;
+                document.getElementById('statusIndicator').classList.add('connected');
+                document.getElementById('statusText').textContent = 'Connected';
+                
+                // Simulate joining with other participants
+                this.simulateParticipants();
+                
+                // Update UI
+                this.updateParticipantCount();
+            }
+
+            simulateParticipants() {
+                // Simulate random participants joining/leaving
+                setInterval(() => {
+                    if (this.room && Math.random() > 0.7) {
+                        const change = Math.random() > 0.5 ? 1 : -1;
+                        this.participantCount = Math.max(1, Math.min(10, this.participantCount + change));
+                        this.updateParticipantCount();
+                    }
+                }, 5000);
+
+                // Simulate remote drawing activity
+                setInterval(() => {
+                    if (this.room && Math.random() > 0.8) {
+                        this.simulateRemoteDrawing();
+                    }
+                }, 3000);
+
+                // Simulate remote cursors
+                setInterval(() => {
+                    if (this.room && Math.random() > 0.6) {
+                        this.simulateRemoteCursor();
+                    }
+                }, 1000);
+            }
+
+            simulateRemoteDrawing() {
+                const colors = ['#ff4757', '#2ed573', '#3742fa', '#ffa502'];
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                
+                const startX = Math.random() * this.canvas.width;
+                const startY = Math.random() * this.canvas.height;
+                
+                this.ctx.globalCompositeOperation = 'source-over';
+                this.ctx.strokeStyle = color;
+                this.ctx.lineWidth = Math.floor(Math.random() * 5) + 1;
+                
+                this.ctx.beginPath();
+                this.ctx.moveTo(startX, startY);
+                
+                // Draw a simple curve
+                for (let i = 0; i < 20; i++) {
+                    const x = startX + Math.sin(i * 0.3) * 50;
+                    const y = startY + i * 3;
+                    this.ctx.lineTo(x, y);
+                }
+                this.ctx.stroke();
+            }
+
+            simulateRemoteCursor() {
+                const cursorId = 'user-' + Math.floor(Math.random() * 5);
+                const colors = ['#ff4757', '#2ed573', '#3742fa', '#ffa502', '#a55eea'];
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                
+                const x = Math.random() * this.canvas.width;
+                const y = Math.random() * this.canvas.height;
+                
+                this.showRemoteCursor(cursorId, x, y, color);
+                
+                // Remove cursor after 2 seconds
+                setTimeout(() => {
+                    this.hideRemoteCursor(cursorId);
+                }, 2000);
+            }
+
+            showRemoteCursor(userId, x, y, color) {
+                let cursor = document.getElementById(`cursor-${userId}`);
+                if (!cursor) {
+                    cursor = document.createElement('div');
+                    cursor.id = `cursor-${userId}`;
+                    cursor.className = 'cursor-indicator';
+                    cursor.style.background = color;
+                    document.querySelector('.canvas-container').appendChild(cursor);
+                }
+                
+                const rect = this.canvas.getBoundingClientRect();
+                cursor.style.left = rect.left + (x * rect.width / this.canvas.width) + 'px';
+                cursor.style.top = rect.top + (y * rect.height / this.canvas.height) + 'px';
+            }
+
+            hideRemoteCursor(userId) {
+                const cursor = document.getElementById(`cursor-${userId}`);
+                if (cursor) {
+                    cursor.remove();
+                }
+            }
+
+            updateParticipantCount() {
+                document.getElementById('participants').textContent = 
+                    `Participants: ${this.participantCount}`;
+            }
+
+            broadcastDrawing(data) {
+                // In a real implementation, this would send data through WebRTC
+                console.log('Broadcasting drawing data:', data);
+            }
+
+            broadcastCursor(data) {
+                // In a real implementation, this would send cursor data through WebRTC
+                console.log('Broadcasting cursor data:', data);
+            }
+
+            broadcastClear() {
+                // In a real implementation, this would broadcast clear command
+                console.log('Broadcasting clear command');
+            }
+        }
+
+        // Initialize the whiteboard
+        const whiteboard = new CollaborativeWhiteboard();
+
+        // Generate a random room ID on load
+        document.getElementById('roomInput').value = 'ROOM-' + Math.random().toString(36).substr(2, 5).toUpperCase();
+    </script>
+</body>
+</html>
