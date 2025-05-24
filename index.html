@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RTC Collaborative Whiteboard</title>
+    <title>Real-Time Collaborative Whiteboard</title>
     <style>
         * {
             margin: 0;
@@ -209,6 +209,21 @@
             z-index: 1000;
             transform: translate(-50%, -50%);
             transition: all 0.1s ease;
+            border: 2px solid white;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .connecting {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            z-index: 10000;
         }
     </style>
 </head>
@@ -257,35 +272,87 @@
 
         <div class="canvas-container">
             <canvas id="whiteboard"></canvas>
-            <div class="participants" id="participants">Participants: 1</div>
+            <div class="participants" id="participants">Participants: 0</div>
         </div>
     </div>
 
+    <div class="connecting" id="connecting" style="display: none;">
+        <div>Connecting to server...</div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
     <script>
-        class CollaborativeWhiteboard {
+        class RealTimeWhiteboard {
             constructor() {
                 this.canvas = document.getElementById('whiteboard');
                 this.ctx = this.canvas.getContext('2d');
+                this.socket = null;
+                this.room = null;
                 this.isDrawing = false;
                 this.currentTool = 'pen';
                 this.currentColor = '#000000';
                 this.brushSize = 3;
                 this.lastX = 0;
                 this.lastY = 0;
-                
-                // WebRTC variables
-                this.peers = new Map();
-                this.localConnection = null;
-                this.room = null;
-                this.participantCount = 1;
                 this.cursors = new Map();
-                
-                // Simulated signaling server (in production, use a real signaling server)
-                this.signalingData = {};
+                this.participantCount = 0;
                 
                 this.setupCanvas();
                 this.setupEventListeners();
                 this.setupTools();
+                this.initSocket();
+            }
+
+            initSocket() {
+                document.getElementById('connecting').style.display = 'block';
+                
+                // Connect to Socket.IO server
+                this.socket = io({
+                    transports: ['websocket', 'polling']
+                });
+
+                this.socket.on('connect', () => {
+                    console.log('Connected to server');
+                    document.getElementById('connecting').style.display = 'none';
+                    document.getElementById('statusIndicator').classList.add('connected');
+                    document.getElementById('statusText').textContent = 'Connected';
+                });
+
+                this.socket.on('disconnect', () => {
+                    console.log('Disconnected from server');
+                    document.getElementById('statusIndicator').classList.remove('connected');
+                    document.getElementById('statusText').textContent = 'Disconnected';
+                });
+
+                this.socket.on('drawing-data', (data) => {
+                    this.drawFromRemote(data);
+                });
+
+                this.socket.on('cursor-move', (data) => {
+                    this.showRemoteCursor(data.userId, data.x, data.y, data.color || '#ff4757');
+                });
+
+                this.socket.on('clear-canvas', () => {
+                    this.clearCanvas();
+                });
+
+                this.socket.on('participant-count', (count) => {
+                    this.participantCount = count;
+                    this.updateParticipantCount();
+                });
+
+                this.socket.on('canvas-data', (canvasData) => {
+                    // Redraw existing canvas data
+                    this.clearCanvas();
+                    canvasData.forEach(data => {
+                        this.drawFromRemote(data);
+                    });
+                });
+
+                this.socket.on('connect_error', (error) => {
+                    console.error('Connection error:', error);
+                    document.getElementById('connecting').innerHTML = 'Connection failed. Please refresh the page.';
+                });
             }
 
             setupCanvas() {
@@ -322,7 +389,7 @@
                 // Tool buttons
                 document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
                     btn.addEventListener('click', (e) => {
-                        document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                        document.querySelectorAll('.tool-btn[data-tool]').forEach(b => b.classList.remove('active'));
                         e.target.classList.add('active');
                         this.currentTool = e.target.dataset.tool;
                         this.canvas.style.cursor = this.currentTool === 'eraser' ? 'grab' : 'crosshair';
@@ -348,14 +415,16 @@
 
                 // Clear button
                 document.getElementById('clearBtn').addEventListener('click', () => {
+                    if (this.room && this.socket) {
+                        this.socket.emit('clear-canvas', this.room);
+                    }
                     this.clearCanvas();
-                    this.broadcastClear();
                 });
 
                 // Room controls
                 document.getElementById('joinBtn').addEventListener('click', () => {
                     const roomId = document.getElementById('roomInput').value.trim();
-                    if (roomId) {
+                    if (roomId && this.socket) {
                         this.joinRoom(roomId);
                     }
                 });
@@ -363,7 +432,7 @@
                 document.getElementById('roomInput').addEventListener('keypress', (e) => {
                     if (e.key === 'Enter') {
                         const roomId = e.target.value.trim();
-                        if (roomId) {
+                        if (roomId && this.socket) {
                             this.joinRoom(roomId);
                         }
                     }
@@ -379,6 +448,7 @@
             }
 
             startDrawing(e) {
+                if (!this.room) return;
                 this.isDrawing = true;
                 const pos = this.getMousePos(e);
                 this.lastX = pos.x;
@@ -386,35 +456,44 @@
             }
 
             draw(e) {
-                if (!this.isDrawing) return;
+                if (!this.isDrawing || !this.room) return;
 
                 const pos = this.getMousePos(e);
                 
-                this.ctx.globalCompositeOperation = 
-                    this.currentTool === 'eraser' ? 'destination-out' : 'source-over';
-                this.ctx.strokeStyle = this.currentColor;
-                this.ctx.lineWidth = this.brushSize;
+                // Draw locally
+                this.drawLine(this.lastX, this.lastY, pos.x, pos.y, this.currentColor, this.brushSize, this.currentTool);
 
-                this.ctx.beginPath();
-                this.ctx.moveTo(this.lastX, this.lastY);
-                this.ctx.lineTo(pos.x, pos.y);
-                this.ctx.stroke();
-
-                // Broadcast drawing data
-                this.broadcastDrawing({
-                    type: 'draw',
-                    fromX: this.lastX,
-                    fromY: this.lastY,
-                    toX: pos.x,
-                    toY: pos.y,
-                    color: this.currentColor,
-                    size: this.brushSize,
-                    tool: this.currentTool,
-                    timestamp: Date.now()
-                });
+                // Send to other users
+                if (this.socket) {
+                    this.socket.emit('drawing-data', {
+                        roomId: this.room,
+                        fromX: this.lastX,
+                        fromY: this.lastY,
+                        toX: pos.x,
+                        toY: pos.y,
+                        color: this.currentColor,
+                        size: this.brushSize,
+                        tool: this.currentTool,
+                        timestamp: Date.now()
+                    });
+                }
 
                 this.lastX = pos.x;
                 this.lastY = pos.y;
+            }
+
+            drawLine(fromX, fromY, toX, toY, color, size, tool) {
+                this.ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
+                this.ctx.strokeStyle = color;
+                this.ctx.lineWidth = size;
+                this.ctx.beginPath();
+                this.ctx.moveTo(fromX, fromY);
+                this.ctx.lineTo(toX, toY);
+                this.ctx.stroke();
+            }
+
+            drawFromRemote(data) {
+                this.drawLine(data.fromX, data.fromY, data.toX, data.toY, data.color, data.size, data.tool);
             }
 
             stopDrawing() {
@@ -422,108 +501,15 @@
             }
 
             trackCursor(e) {
-                if (!this.room) return;
+                if (!this.room || !this.socket) return;
                 
                 const pos = this.getMousePos(e);
-                this.broadcastCursor({
-                    type: 'cursor',
+                this.socket.emit('cursor-move', {
+                    roomId: this.room,
                     x: pos.x,
                     y: pos.y,
-                    timestamp: Date.now()
+                    color: this.currentColor
                 });
-            }
-
-            handleTouch(e) {
-                e.preventDefault();
-                const touch = e.touches[0];
-                const mouseEvent = new MouseEvent(e.type === 'touchstart' ? 'mousedown' : 
-                    e.type === 'touchmove' ? 'mousemove' : 'mouseup', {
-                    clientX: touch.clientX,
-                    clientY: touch.clientY
-                });
-                this.canvas.dispatchEvent(mouseEvent);
-            }
-
-            clearCanvas() {
-                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-            }
-
-            // Simulated WebRTC functionality
-            async joinRoom(roomId) {
-                this.room = roomId;
-                document.getElementById('currentRoom').textContent = roomId;
-                document.getElementById('statusIndicator').classList.add('connected');
-                document.getElementById('statusText').textContent = 'Connected';
-                
-                // Simulate joining with other participants
-                this.simulateParticipants();
-                
-                // Update UI
-                this.updateParticipantCount();
-            }
-
-            simulateParticipants() {
-                // Simulate random participants joining/leaving
-                setInterval(() => {
-                    if (this.room && Math.random() > 0.7) {
-                        const change = Math.random() > 0.5 ? 1 : -1;
-                        this.participantCount = Math.max(1, Math.min(10, this.participantCount + change));
-                        this.updateParticipantCount();
-                    }
-                }, 5000);
-
-                // Simulate remote drawing activity
-                setInterval(() => {
-                    if (this.room && Math.random() > 0.8) {
-                        this.simulateRemoteDrawing();
-                    }
-                }, 3000);
-
-                // Simulate remote cursors
-                setInterval(() => {
-                    if (this.room && Math.random() > 0.6) {
-                        this.simulateRemoteCursor();
-                    }
-                }, 1000);
-            }
-
-            simulateRemoteDrawing() {
-                const colors = ['#ff4757', '#2ed573', '#3742fa', '#ffa502'];
-                const color = colors[Math.floor(Math.random() * colors.length)];
-                
-                const startX = Math.random() * this.canvas.width;
-                const startY = Math.random() * this.canvas.height;
-                
-                this.ctx.globalCompositeOperation = 'source-over';
-                this.ctx.strokeStyle = color;
-                this.ctx.lineWidth = Math.floor(Math.random() * 5) + 1;
-                
-                this.ctx.beginPath();
-                this.ctx.moveTo(startX, startY);
-                
-                // Draw a simple curve
-                for (let i = 0; i < 20; i++) {
-                    const x = startX + Math.sin(i * 0.3) * 50;
-                    const y = startY + i * 3;
-                    this.ctx.lineTo(x, y);
-                }
-                this.ctx.stroke();
-            }
-
-            simulateRemoteCursor() {
-                const cursorId = 'user-' + Math.floor(Math.random() * 5);
-                const colors = ['#ff4757', '#2ed573', '#3742fa', '#ffa502', '#a55eea'];
-                const color = colors[Math.floor(Math.random() * colors.length)];
-                
-                const x = Math.random() * this.canvas.width;
-                const y = Math.random() * this.canvas.height;
-                
-                this.showRemoteCursor(cursorId, x, y, color);
-                
-                // Remove cursor after 2 seconds
-                setTimeout(() => {
-                    this.hideRemoteCursor(cursorId);
-                }, 2000);
             }
 
             showRemoteCursor(userId, x, y, color) {
@@ -539,41 +525,58 @@
                 const rect = this.canvas.getBoundingClientRect();
                 cursor.style.left = rect.left + (x * rect.width / this.canvas.width) + 'px';
                 cursor.style.top = rect.top + (y * rect.height / this.canvas.height) + 'px';
+                cursor.style.background = color;
+                
+                // Remove cursor after 3 seconds of inactivity
+                clearTimeout(cursor.timeout);
+                cursor.timeout = setTimeout(() => {
+                    if (cursor.parentElement) {
+                        cursor.remove();
+                    }
+                }, 3000);
             }
 
-            hideRemoteCursor(userId) {
-                const cursor = document.getElementById(`cursor-${userId}`);
-                if (cursor) {
-                    cursor.remove();
-                }
+            handleTouch(e) {
+                e.preventDefault();
+                const touch = e.touches[0];
+                if (!touch) return;
+                
+                const mouseEvent = new MouseEvent(
+                    e.type === 'touchstart' ? 'mousedown' : 
+                    e.type === 'touchmove' ? 'mousemove' : 'mouseup', 
+                    {
+                        clientX: touch.clientX,
+                        clientY: touch.clientY
+                    }
+                );
+                this.canvas.dispatchEvent(mouseEvent);
+            }
+
+            clearCanvas() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            }
+
+            joinRoom(roomId) {
+                if (!this.socket) return;
+                
+                this.room = roomId;
+                this.socket.emit('join-room', roomId);
+                document.getElementById('currentRoom').textContent = roomId;
+                console.log('Joined room:', roomId);
             }
 
             updateParticipantCount() {
-                document.getElementById('participants').textContent = 
-                    `Participants: ${this.participantCount}`;
-            }
-
-            broadcastDrawing(data) {
-                // In a real implementation, this would send data through WebRTC
-                console.log('Broadcasting drawing data:', data);
-            }
-
-            broadcastCursor(data) {
-                // In a real implementation, this would send cursor data through WebRTC
-                console.log('Broadcasting cursor data:', data);
-            }
-
-            broadcastClear() {
-                // In a real implementation, this would broadcast clear command
-                console.log('Broadcasting clear command');
+                document.getElementById('participants').textContent = `Participants: ${this.participantCount}`;
             }
         }
 
-        // Initialize the whiteboard
-        const whiteboard = new CollaborativeWhiteboard();
-
-        // Generate a random room ID on load
-        document.getElementById('roomInput').value = 'ROOM-' + Math.random().toString(36).substr(2, 5).toUpperCase();
+        // Initialize the whiteboard when page loads
+        window.addEventListener('load', () => {
+            const whiteboard = new RealTimeWhiteboard();
+            
+            // Generate a random room ID
+            document.getElementById('roomInput').value = 'ROOM-' + Math.random().toString(36).substr(2, 5).toUpperCase();
+        });
     </script>
 </body>
 </html>
